@@ -1,0 +1,13 @@
+{
+    "display_name": "TokenSaver — Compactador de Prompt (OpenRouter)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Você",
+    "version": "1.0.0",
+    "homePage": "https://github.com/SEU_USUARIO/SillyTavern-TokenSaver",
+    "auto_update": true,
+    "minimum_client_version": "1.12.0"
+}

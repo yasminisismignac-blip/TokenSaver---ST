@@ -1,0 +1,10 @@
+{
+    "name": "sillytavern-tokensaver",
+    "version": "1.0.0",
+    "description": "Extensão do SillyTavern que compacta o prompt antes de enviar ao LLM para gastar menos tokens/créditos (feita pensando no OpenRouter).",
+    "type": "module",
+    "scripts": {
+        "test": "node --test test/*.test.js"
+    },
+    "license": "MIT"
+}

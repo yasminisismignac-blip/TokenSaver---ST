@@ -1,0 +1,118 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { DEFAULTS, PRESETS } from '../src/defaults.js';
+import { compactPrompt } from '../src/pipeline.js';
+import { dedupeLines, parseRegexList, safeClean, stripHtml, stripThink, truncateMiddle } from '../src/compactor.js';
+
+const opts = (over = {}) => ({ ...DEFAULTS, ...over });
+const conv = (n) => Array.from({ length: n }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `msg ${i}` }));
+
+test('safeClean colapsa linhas em branco e espaços', () => {
+    const out = safeClean('a  b   \n\n\n\n\nc\u200B\u00A0d   ', opts());
+    assert.equal(out, 'a b\n\nc d');
+});
+
+test('safeClean remove separadores longos mas preserva ***', () => {
+    assert.equal(safeClean('a\n==========\nb\n***\nc', opts({ maxBlankLines: 0 })), 'a\nb\n***\nc');
+});
+
+test('stripThink remove blocos e fecho órfão', () => {
+    assert.equal(stripThink('<think>x\ny</think>Oi'), 'Oi');
+    assert.equal(stripThink('raciocínio solto</think>Oi'), 'Oi');
+});
+
+test('stripHtml mantém o texto', () => {
+    assert.equal(stripHtml('<div style="a">Olá<br>mundo</div><style>.a{}</style>'), 'Olá\nmundo');
+});
+
+test('truncateMiddle respeita limite aproximado e mantém pontas', () => {
+    const t = 'início '.repeat(100) + 'FIM';
+    const r = truncateMiddle(t, 200);
+    assert.ok(r.length <= 205);
+    assert.ok(r.startsWith('início'));
+    assert.ok(r.endsWith('FIM'));
+    assert.ok(r.includes('[…]'));
+});
+
+test('parseRegexList aceita /re/flags, texto puro e ignora inválidas', () => {
+    const l = parseRegexList('/oi/i\nfoo\n[invalida\n// comentário');
+    assert.equal(l.length, 2);
+});
+
+test('dedupeLines remove linhas longas repetidas', () => {
+    const seen = new Set();
+    const line = 'Esta é uma linha bem longa que se repete em vários blocos.';
+    assert.equal(dedupeLines(line, seen), line);
+    assert.equal(dedupeLines(`${line}\ncurta`, seen), 'curta');
+});
+
+test('janela em blocos: prefixo estável entre turnos', () => {
+    const o = opts({ windowMax: 20, windowStep: 6, keepFull: 4, oldMaxChars: 0, dropExamples: false });
+    const sizes = [];
+    for (let n = 21; n <= 40; n++) {
+        const { messages } = compactPrompt(conv(n), o);
+        sizes.push({ n, first: messages[0].content });
+    }
+    const distinctStarts = new Set(sizes.map((s) => s.first));
+    assert.ok(distinctStarts.size <= 4, `início mudou ${distinctStarts.size}x (esperado ≤ 4)`);
+});
+
+test('nunca remove a última mensagem', () => {
+    const msgs = conv(60);
+    const { messages } = compactPrompt(msgs, opts({ windowMax: 6 }));
+    assert.equal(messages.at(-1).content, 'msg 59');
+});
+
+test('com tool calls a janela é desativada (evita orfanar tool results)', () => {
+    const msgs = [...conv(60), { role: 'tool', content: 'r', tool_call_id: '1' }];
+    const { report } = compactPrompt(msgs, opts({ windowMax: 6 }));
+    assert.equal(report.droppedConv, 0);
+});
+
+test('une blocos de sistema consecutivos e remove duplicatas', () => {
+    const dup = 'Instrução importante que aparece em dois lugares diferentes do prompt.';
+    const msgs = [
+        { role: 'system', content: `A\n${dup}` },
+        { role: 'system', content: `B\n${dup}` },
+        { role: 'user', content: 'oi' },
+    ];
+    const { messages } = compactPrompt(msgs, opts());
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].content.split(dup).length - 1, 1);
+});
+
+test('exemplos de diálogo caem quando o chat já tem mensagens', () => {
+    const msgs = [
+        { role: 'system', content: '[Example Chat]' },
+        { role: 'system', name: 'example_user', content: 'ex' },
+        { role: 'system', name: 'example_assistant', content: 'ex2' },
+        ...conv(10),
+    ];
+    const { messages } = compactPrompt(msgs, opts());
+    assert.ok(!messages.some((m) => m.name?.startsWith('example_')));
+});
+
+test('mensagens antigas são compactadas; recentes preservadas', () => {
+    const big = 'palavra '.repeat(400);
+    const msgs = Array.from({ length: 30 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `${i}: ${big}` }));
+    const { messages, report } = compactPrompt(msgs, opts({ windowEnabled: false, keepFull: 6, windowStep: 2, oldMaxChars: 300 }));
+    assert.ok(report.charsAfter < report.charsBefore * 0.5);
+    assert.ok(messages.at(-1).content.length > 3000, 'última intacta');
+});
+
+test('presets não quebram', () => {
+    for (const p of Object.values(PRESETS)) {
+        const { messages } = compactPrompt(conv(50), opts(p));
+        assert.ok(messages.length > 0);
+    }
+});
+
+test('conteúdo multimodal: imagens antigas saem, texto é compactado', () => {
+    const msgs = [
+        { role: 'user', content: [{ type: 'text', text: 'a   b' }, { type: 'image_url', image_url: { url: 'x' } }] },
+        ...conv(20),
+    ];
+    const { messages } = compactPrompt(msgs, opts({ windowEnabled: false, keepFull: 4, windowStep: 2 }));
+    assert.equal(messages[0].content.some((p) => p.type === 'image_url'), false);
+    assert.equal(messages[0].content[0].text, 'a b');
+});
